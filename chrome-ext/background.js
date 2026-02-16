@@ -1,7 +1,13 @@
+// Load order matters: config.js defines TIERS, ExtPay.js defines ExtPay(), licensing.js uses both
+importScripts("config.js", "ExtPay.js", "licensing.js");
+
 const ZOTERO_HOST = "http://localhost:23119";
 
 let syncLock = false;
 let autoSyncLock = false;
+
+// Initialize ExtensionPay licensing
+initLicensing();
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "START_SYNC") {
@@ -14,6 +20,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         setupAutoSyncAlarm();
       });
     sendResponse({ status: "ok" });
+  } else if (request.action === "GET_TIER_INFO") {
+    // Return tier + sync stats for popup UI
+    (async () => {
+      const pro = await isPro();
+      const tier = pro ? TIERS.pro : TIERS.free;
+      const stats = await getSyncStats();
+      sendResponse({ pro, tier, stats });
+    })();
+    return true; // keep channel open for async
   }
   return true;
 });
@@ -26,6 +41,13 @@ async function setupAutoSyncAlarm() {
 
   // Clear existing alarm
   await chrome.alarms.clear("autoSync");
+
+  // Auto-sync is Pro-only
+  const tier = await getTierConfig();
+  if (!tier.autoSyncEnabled) {
+    console.log("[Sync] Auto-sync alarm cleared (Free tier)");
+    return;
+  }
 
   if (settings.intervalEnabled && settings.intervalMinutes) {
     await chrome.alarms.create("autoSync", {
@@ -60,14 +82,18 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     tab.url &&
     tab.url.startsWith("https://notebooklm.google.com/notebook/")
   ) {
-    chrome.storage.local.get("autoSyncSettings").then((data) => {
-      const settings = data.autoSyncSettings || {};
-      if (settings.syncOnPageVisit) {
-        console.log(
-          "[Sync] Page visit detected, triggering auto-sync in 3s...",
-        );
-        setTimeout(() => runAutoSync(), 3000);
-      }
+    // Page-visit auto-sync is Pro-only
+    getTierConfig().then((tier) => {
+      if (!tier.autoSyncEnabled) return;
+      chrome.storage.local.get("autoSyncSettings").then((data) => {
+        const settings = data.autoSyncSettings || {};
+        if (settings.syncOnPageVisit) {
+          console.log(
+            "[Sync] Page visit detected, triggering auto-sync in 3s...",
+          );
+          setTimeout(() => runAutoSync(), 3000);
+        }
+      });
     });
   }
 });
@@ -214,6 +240,17 @@ async function ensureNotebookTab(notebookId) {
 async function _runSyncProcessInner(project) {
   updateStatus(`[${project.name}] Getting list...`);
 
+  // --- Tier enforcement: check daily sync limit ---
+  const tier = (await getTierConfig()) || TIERS.free;
+  const syncCheck = await canSync();
+  if (!syncCheck.allowed) {
+    updateStatus(`[${project.name}] ${syncCheck.reason}`);
+    return;
+  }
+
+  // Increment sync counter now to prevent bypass via early failure
+  await incrementSyncStats(0);
+
   try {
     // 1. Get list of files from Zotero with project filters
     const listReq = await fetch(`${ZOTERO_HOST}/notebooklm/list`, {
@@ -236,9 +273,32 @@ async function _runSyncProcessInner(project) {
       return;
     }
 
-    const filesToSync = await listReq.json();
+    let filesToSync = await listReq.json();
     if (filesToSync.length === 0) {
       updateStatus(`[${project.name}] No items found matching filters.`);
+      return;
+    }
+
+    // --- Tier enforcement: filter by allowed MIME types ---
+    const allowedMimes = tier.allowedMimeTypes;
+    const beforeFilter = filesToSync.length;
+    filesToSync = filesToSync.filter((f) => {
+      // If mimeType is available from the list, filter here; otherwise allow through
+      // (the file endpoint returns the actual mimeType, so we also filter there)
+      if (!f.mimeType) return true;
+      return allowedMimes.includes(f.mimeType);
+    });
+    const skippedByType = beforeFilter - filesToSync.length;
+    if (skippedByType > 0) {
+      console.log(
+        `[Sync] Skipped ${skippedByType} files (unsupported type in current tier)`,
+      );
+    }
+
+    if (filesToSync.length === 0) {
+      updateStatus(
+        `[${project.name}] No supported file types found. Upgrade to Pro for TXT, MD, DOCX support.`,
+      );
       return;
     }
 
@@ -307,18 +367,32 @@ async function _runSyncProcessInner(project) {
       return;
     }
 
-    const totalToSync = filesNeeded.length;
+    // --- Tier enforcement: cap files per sync ---
+    let cappedFiles = filesNeeded;
+    if (
+      tier.maxFilesPerSync !== Infinity &&
+      filesNeeded.length > tier.maxFilesPerSync
+    ) {
+      cappedFiles = filesNeeded.slice(0, tier.maxFilesPerSync);
+      updateStatus(
+        `[${project.name}] Free tier: syncing ${tier.maxFilesPerSync} of ${filesNeeded.length} files. Upgrade for unlimited.`,
+      );
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+
+    const totalToSync = cappedFiles.length;
     updateStatus(`[${project.name}] Found ${totalToSync} files to sync...`);
 
     // Let's wait a second so the user can see the count
     await new Promise((r) => setTimeout(r, 1000));
 
-    // 4. Process in batches of 10
-    const BATCH_SIZE = 10;
+    // 4. Process in batches (size depends on tier)
+    const BATCH_SIZE = tier.batchSize;
+    const BATCH_PAUSE = tier.batchPauseMs;
     let syncedCount = 0;
 
     for (let i = 0; i < totalToSync; i += BATCH_SIZE) {
-      const currentBatchFiles = filesNeeded.slice(i, i + BATCH_SIZE);
+      const currentBatchFiles = cappedFiles.slice(i, i + BATCH_SIZE);
       const batchNum = Math.floor(i / BATCH_SIZE) + 1;
       const totalBatches = Math.ceil(totalToSync / BATCH_SIZE);
 
@@ -339,6 +413,13 @@ async function _runSyncProcessInner(project) {
           });
           const fileRes = await fileReq.json();
           if (fileRes.success) {
+            // Tier enforcement: skip files with unsupported MIME at fetch time
+            if (!allowedMimes.includes(fileRes.mimeType)) {
+              console.log(
+                `[Sync] Skipped "${fileInfo.title}" — ${fileRes.mimeType} not in tier`,
+              );
+              continue;
+            }
             batchData.push({
               id: fileInfo.id,
               title: fileInfo.title,
@@ -382,10 +463,10 @@ async function _runSyncProcessInner(project) {
 
         syncedCount += batchData.length;
 
-        // Pause slightly between batches to let NotebookLM process
+        // Tier-aware pause between batches
         if (i + BATCH_SIZE < totalToSync) {
           updateStatus(`[${project.name}] Batch ${batchNum} done. Resting...`);
-          await new Promise((r) => setTimeout(r, 2000));
+          await new Promise((r) => setTimeout(r, BATCH_PAUSE));
         }
       }
     }

@@ -327,15 +327,159 @@
     }
     #status-toast.show { transform: translateY(0); }
 
+    /* Tier Badge */
+    .tier-badge {
+      font-size: 10px;
+      font-weight: 800;
+      padding: 2px 8px;
+      border-radius: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .tier-badge.free {
+      background: #f1f5f9;
+      color: var(--text-muted);
+    }
+    .tier-badge.pro {
+      background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+      color: white;
+    }
+
+    /* Sync Stats Bar */
+    .sync-stats {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 16px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .sync-stats-bar {
+      flex: 1;
+      height: 4px;
+      background: #e2e8f0;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .sync-stats-fill {
+      height: 100%;
+      background: var(--primary);
+      border-radius: 2px;
+      transition: width 0.3s;
+    }
+    .sync-stats-fill.warning { background: #f59e0b; }
+    .sync-stats-fill.full { background: var(--danger); }
+
+    /* Upgrade Banner */
+    .upgrade-banner {
+      background: linear-gradient(135deg, #ede9fe, #e0e7ff);
+      border: 1px solid #c4b5fd;
+      border-radius: 12px;
+      padding: 14px;
+      margin-bottom: 16px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .upgrade-banner:hover {
+      border-color: #8b5cf6;
+      box-shadow: 0 2px 8px rgba(139, 92, 246, 0.15);
+    }
+    .upgrade-banner-title {
+      font-weight: 700;
+      font-size: 13px;
+      color: #5b21b6;
+      margin-bottom: 4px;
+    }
+    .upgrade-banner-text {
+      font-size: 11px;
+      color: #6d28d9;
+    }
+    .upgrade-banner.hidden { display: none; }
+
+    /* Pro Lock Overlay for Auto-Sync */
+    .pro-locked {
+      position: relative;
+    }
+    .pro-locked::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: rgba(255, 255, 255, 0.6);
+      border-radius: 8px;
+      pointer-events: none;
+    }
+    .pro-locked input, .pro-locked select {
+      pointer-events: none;
+    }
+    .pro-lock-label {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 700;
+      color: #7c3aed;
+      background: #ede9fe;
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-left: 6px;
+      cursor: pointer;
+    }
+
+    /* Upgrade Prompt (inline) */
+    .upgrade-prompt {
+      background: #fefce8;
+      border: 1px solid #fde68a;
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 16px;
+      font-size: 12px;
+      color: #92400e;
+    }
+    .upgrade-prompt.hidden { display: none; }
+    .upgrade-prompt-btn {
+      display: inline-block;
+      background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+      color: white;
+      border: none;
+      padding: 6px 14px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      margin-top: 8px;
+      width: auto;
+    }
+    .upgrade-prompt-btn:hover {
+      opacity: 0.9;
+    }
+
   </style>
 </head>
 <body>
   <div id="main-view">
     <div class="header">
-      <h3>Projects</h3>
+      <h3>Projects <span id="tier-badge" class="tier-badge free">Free</span></h3>
       <button id="add-project-btn" class="add-btn" title="New Project">
         <i data-lucide="plus" style="width: 20px; height: 20px;"></i>
       </button>
+    </div>
+
+    <!-- Upgrade Banner (Free tier only) -->
+    <div id="upgrade-banner" class="upgrade-banner hidden" title="Upgrade to Pro">
+      <div class="upgrade-banner-title">Unlock unlimited syncs</div>
+      <div class="upgrade-banner-text">Upgrade to Pro for unlimited projects, auto-sync, all file types, and more.</div>
+    </div>
+
+    <!-- Sync Stats (Free tier only) -->
+    <div id="sync-stats" class="sync-stats hidden">
+      <span id="sync-stats-text">0/5 syncs today</span>
+      <div class="sync-stats-bar">
+        <div id="sync-stats-fill" class="sync-stats-fill" style="width: 0%"></div>
+      </div>
+    </div>
+
+    <!-- Upgrade Prompt (shown when limit hit) -->
+    <div id="upgrade-prompt" class="upgrade-prompt hidden">
+      <span id="upgrade-prompt-text"></span>
+      <button id="upgrade-prompt-btn" class="upgrade-prompt-btn">Upgrade to Pro</button>
     </div>
 
     <div id="project-list">
@@ -346,8 +490,8 @@
       No projects found. Create one to begin.
     </div>
 
-    <div class="auto-sync-section">
-      <h4>Auto-Sync</h4>
+    <div class="auto-sync-section" id="auto-sync-section">
+      <h4>Auto-Sync <span id="auto-sync-pro-label" class="pro-lock-label hidden">PRO</span></h4>
       <div class="auto-sync-row">
         <input type="checkbox" id="auto-sync-page-visit">
         <label for="auto-sync-page-visit">Sync when visiting NotebookLM</label>
@@ -421,6 +565,9 @@
     <span id="toast-text">Ready</span>
   </div>
 
+  <script src="config.js"></script>
+  <script src="ExtPay.js"></script>
+  <script src="licensing.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

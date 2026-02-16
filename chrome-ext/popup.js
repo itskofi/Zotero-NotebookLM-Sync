@@ -26,11 +26,27 @@ const nbRefreshBtn = document.getElementById("nb-refresh");
 const nbIdHidden = document.getElementById("p-notebookId");
 const nbNameHidden = document.getElementById("p-notebookName");
 
+// Tier UI elements
+const tierBadge = document.getElementById("tier-badge");
+const upgradeBanner = document.getElementById("upgrade-banner");
+const syncStatsEl = document.getElementById("sync-stats");
+const syncStatsText = document.getElementById("sync-stats-text");
+const syncStatsFill = document.getElementById("sync-stats-fill");
+const upgradePrompt = document.getElementById("upgrade-prompt");
+const upgradePromptText = document.getElementById("upgrade-prompt-text");
+const upgradePromptBtn = document.getElementById("upgrade-prompt-btn");
+const autoSyncSection = document.getElementById("auto-sync-section");
+const autoSyncProLabel = document.getElementById("auto-sync-pro-label");
+
 let projects = [];
 let notebookCache = [];
 let highlightedIndex = -1;
+let currentTierInfo = null; // { pro, tier, stats }
 
 const ZOTERO_HOST = "http://localhost:23119";
+
+// Initialize ExtPay for popup (no startBackground — that runs in the service worker)
+initLicensing(false);
 
 const icons = {
   plus: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>`,
@@ -47,6 +63,77 @@ const icons = {
 // Set the header icon
 document.getElementById("add-project-btn").innerHTML = icons.plus;
 document.querySelector("#status-toast i").outerHTML = icons.info;
+
+// --- Tier UI ---
+
+function triggerUpgrade() {
+  openPaymentPage();
+  showToast("Opening upgrade page...", 3000);
+}
+
+upgradeBanner.addEventListener("click", triggerUpgrade);
+upgradePromptBtn.addEventListener("click", triggerUpgrade);
+
+async function updateTierUI() {
+  // Ask background for tier info (it has the ExtPay instance)
+  try {
+    currentTierInfo = await new Promise((resolve) => {
+      chrome.runtime.sendMessage({ action: "GET_TIER_INFO" }, resolve);
+    });
+  } catch {
+    currentTierInfo = {
+      pro: false,
+      tier: TIERS.free,
+      stats: { date: "", syncCount: 0, fileCount: 0 },
+    };
+  }
+
+  const { pro, tier, stats } = currentTierInfo;
+
+  // Badge
+  tierBadge.textContent = pro ? "Pro" : "Free";
+  tierBadge.className = "tier-badge " + (pro ? "pro" : "free");
+
+  // Upgrade banner
+  if (pro) {
+    upgradeBanner.classList.add("hidden");
+  } else {
+    upgradeBanner.classList.remove("hidden");
+  }
+
+  // Sync stats (Free only)
+  if (!pro && tier.maxSyncsPerDay !== Infinity) {
+    syncStatsEl.classList.remove("hidden");
+    const used = stats.syncCount || 0;
+    const max = tier.maxSyncsPerDay;
+    syncStatsText.textContent = `${used}/${max} syncs today`;
+    const pct = Math.min((used / max) * 100, 100);
+    syncStatsFill.style.width = pct + "%";
+    syncStatsFill.className = "sync-stats-fill";
+    if (pct >= 100) syncStatsFill.classList.add("full");
+    else if (pct >= 60) syncStatsFill.classList.add("warning");
+  } else {
+    syncStatsEl.classList.add("hidden");
+  }
+
+  // Auto-sync Pro lock
+  if (!pro) {
+    autoSyncSection.classList.add("pro-locked");
+    autoSyncProLabel.classList.remove("hidden");
+    autoSyncProLabel.addEventListener("click", triggerUpgrade);
+  } else {
+    autoSyncSection.classList.remove("pro-locked");
+    autoSyncProLabel.classList.add("hidden");
+  }
+
+  // Hide any stale upgrade prompt
+  upgradePrompt.classList.add("hidden");
+}
+
+function showUpgradePrompt(message) {
+  upgradePromptText.textContent = message;
+  upgradePrompt.classList.remove("hidden");
+}
 
 // --- Zotero Fetch Helper ---
 
@@ -147,12 +234,16 @@ async function loadCollections(libraryID) {
 // --- Notebook History + Dropdown ---
 
 async function loadNotebooksFromHistory() {
-  const sixMonthsAgo = Date.now() - 180 * 24 * 60 * 60 * 1000;
+  // Tier-aware history lookback and result limits
+  const tier = currentTierInfo ? currentTierInfo.tier : TIERS.free;
+  const lookbackMs = tier.notebookHistoryDays * 24 * 60 * 60 * 1000;
+  const startTime = Date.now() - lookbackMs;
+  const maxResults = tier.notebookMaxResults;
   try {
     const results = await chrome.history.search({
       text: "notebooklm.google.com/notebook/",
-      startTime: sixMonthsAgo,
-      maxResults: 500,
+      startTime,
+      maxResults,
     });
 
     const byId = {};
@@ -343,6 +434,7 @@ librarySelect.addEventListener("change", () => {
 // --- Initialize ---
 
 async function load() {
+  await updateTierUI();
   const data = await chrome.storage.local.get("projects");
   projects = data.projects || [];
   render();
@@ -546,6 +638,15 @@ saveBtn.addEventListener("click", async () => {
   };
 
   if (idx === -1) {
+    // Double-check project limit before saving (in case state changed)
+    const tier = currentTierInfo ? currentTierInfo.tier : TIERS.free;
+    if (tier.maxProjects !== Infinity && projects.length >= tier.maxProjects) {
+      showUpgradePrompt(
+        `You've reached the free project limit (${tier.maxProjects}). Upgrade to Pro for unlimited projects.`,
+      );
+      hideForm();
+      return;
+    }
     projects.push(p);
   } else {
     projects[idx] = p;
@@ -555,7 +656,17 @@ saveBtn.addEventListener("click", async () => {
   hideForm();
 });
 
-addBtn.addEventListener("click", () => showForm());
+addBtn.addEventListener("click", () => {
+  // Tier enforcement: project limit
+  const tier = currentTierInfo ? currentTierInfo.tier : TIERS.free;
+  if (tier.maxProjects !== Infinity && projects.length >= tier.maxProjects) {
+    showUpgradePrompt(
+      `You've reached the free project limit (${tier.maxProjects}). Upgrade to Pro for unlimited projects.`,
+    );
+    return;
+  }
+  showForm();
+});
 cancelBtn.addEventListener("click", hideForm);
 
 // --- Sync ---
@@ -579,13 +690,15 @@ chrome.runtime.onMessage.addListener((msg) => {
       msg.text.includes("complete") || msg.text.includes("Error") ? 4000 : 0,
     );
 
-    // Stop spinning if complete
+    // Stop spinning if complete, and refresh tier stats
     if (
       msg.text.includes("complete") ||
       msg.text.includes("Error") ||
-      msg.text.includes("up to date")
+      msg.text.includes("up to date") ||
+      msg.text.includes("Success")
     ) {
       render();
+      updateTierUI();
     }
   }
 });
@@ -611,8 +724,20 @@ async function saveAutoSyncSettings() {
   chrome.runtime.sendMessage({ action: "UPDATE_AUTO_SYNC_SETTINGS", settings });
 }
 
-autoSyncPageVisit.addEventListener("change", saveAutoSyncSettings);
+autoSyncPageVisit.addEventListener("change", () => {
+  if (!currentTierInfo?.pro) {
+    autoSyncPageVisit.checked = false;
+    showUpgradePrompt("Auto-sync is a Pro feature. Upgrade to enable it.");
+    return;
+  }
+  saveAutoSyncSettings();
+});
 autoSyncIntervalEnabled.addEventListener("change", () => {
+  if (!currentTierInfo?.pro) {
+    autoSyncIntervalEnabled.checked = false;
+    showUpgradePrompt("Auto-sync is a Pro feature. Upgrade to enable it.");
+    return;
+  }
   autoSyncInterval.disabled = !autoSyncIntervalEnabled.checked;
   saveAutoSyncSettings();
 });
