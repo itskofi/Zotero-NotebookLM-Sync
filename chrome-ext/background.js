@@ -158,6 +158,47 @@ async function runSyncProcess(project) {
   }
 }
 
+function normalizeFilename(name) {
+  return String(name || "")
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function buildHistoryKey(notebookId, fileId) {
+  return `${notebookId}_${fileId}`;
+}
+
+function isFileUnchanged(file, historyEntry) {
+  if (!historyEntry) return false;
+
+  if (file.hash && historyEntry.hash) {
+    return file.hash === historyEntry.hash;
+  }
+
+  return file.dateModified === historyEntry.dateModified;
+}
+
+async function listNotebookSources(tabId) {
+  const response = await sendMessageWithRetry(tabId, {
+    action: "LIST_NOTEBOOK_SOURCES",
+  });
+
+  if (!response || typeof response.success !== "boolean") {
+    throw new Error("Invalid notebook source scan response");
+  }
+
+  if (!response.success) {
+    throw new Error(response.error || "Notebook source scan failed");
+  }
+
+  return {
+    sources: Array.isArray(response.sources) ? response.sources : [],
+    duplicates: Array.isArray(response.duplicates) ? response.duplicates : [],
+    scanMethod: response.scanMethod || "unknown",
+  };
+}
+
 // --- Tab Navigation Helpers ---
 
 function waitForTabLoad(tabId, timeoutMs = 30000) {
@@ -349,20 +390,141 @@ async function _runSyncProcessInner(project) {
     }
     console.log(`[Sync] Target Notebook ID: ${notebookId}`);
 
-    // 3. Filter using sync history (scoped by notebookId)
+    // 3. Hybrid dedup (local history + notebook source scan for uncertain files)
     const storage = await chrome.storage.local.get("syncHistory");
     const syncHistory = storage.syncHistory || {};
+    const uncertainCandidates = [];
+    const decisionByFileId = new Map();
+    let existingNotebookDuplicates = [];
+    let notebookScanSucceeded = false;
 
-    const filesNeeded = filesToSync.filter((file) => {
-      const historyKey = `${notebookId}_${file.id}`;
+    for (const file of filesToSync) {
+      const historyKey = buildHistoryKey(notebookId, file.id);
       const history = syncHistory[historyKey];
-      if (!history) return true;
-      if (file.hash && history.hash !== file.hash) return true;
-      if (file.dateModified !== history.dateModified) return true;
-      return false;
+
+      if (!history) {
+        uncertainCandidates.push(file);
+        continue;
+      }
+
+      if (isFileUnchanged(file, history)) {
+        decisionByFileId.set(file.id, {
+          decision: "skip_up_to_date",
+          reason: "history_match",
+        });
+      } else {
+        decisionByFileId.set(file.id, {
+          decision: "upload",
+          reason: "history_changed",
+        });
+      }
+    }
+
+    if (uncertainCandidates.length > 0) {
+      updateStatus(
+        `[${project.name}] Checking notebook for possible duplicates...`,
+      );
+
+      try {
+        const sourceScan = await listNotebookSources(tab.id);
+        const existingSourceNames = new Set(
+          sourceScan.sources
+            .map((s) => normalizeFilename(s.normalizedName || s.rawName))
+            .filter(Boolean),
+        );
+        existingNotebookDuplicates = sourceScan.duplicates
+          .filter((d) => d && d.normalizedName && d.count > 1)
+          .map((d) => ({
+            name: d.normalizedName,
+            count: d.count,
+          }));
+        notebookScanSucceeded = true;
+
+        for (const file of uncertainCandidates) {
+          const normalizedFileName = normalizeFilename(
+            file.filename || file.title,
+          );
+
+          if (!normalizedFileName || existingSourceNames.has(normalizedFileName)) {
+            decisionByFileId.set(file.id, {
+              decision: "skip_possible_duplicate",
+              reason: "filename_already_present_in_notebook",
+            });
+          } else {
+            decisionByFileId.set(file.id, {
+              decision: "upload",
+              reason: "notebook_scan_clear",
+            });
+          }
+        }
+
+        console.log(
+          `[Sync] Notebook source scan (${sourceScan.scanMethod}): ${existingSourceNames.size} unique names`,
+        );
+      } catch (e) {
+        console.warn(
+          "[Sync] Notebook source scan failed. Applying fail-closed policy:",
+          e,
+        );
+        for (const file of uncertainCandidates) {
+          decisionByFileId.set(file.id, {
+            decision: "skip_possible_duplicate",
+            reason: "notebook_scan_failed",
+          });
+        }
+        updateStatus(
+          `[${project.name}] Could not verify notebook sources. Skipping ${uncertainCandidates.length} uncertain file(s) to avoid duplicates.`,
+        );
+      }
+    }
+
+    const dedupDecisions = filesToSync.map((file) => {
+      const decision = decisionByFileId.get(file.id);
+      if (!decision) {
+        return {
+          file,
+          decision: "skip_possible_duplicate",
+          reason: "missing_dedup_decision",
+        };
+      }
+      return { file, ...decision };
     });
 
+    const filesNeeded = dedupDecisions
+      .filter((d) => d.decision === "upload")
+      .map((d) => d.file);
+    const blockedPossibleDuplicates = dedupDecisions
+      .filter((d) => d.decision === "skip_possible_duplicate")
+      .map((d) => d.file.filename || d.file.title || `attachment-${d.file.id}`);
+
+    await chrome.storage.local.set({
+      lastDedupReport: {
+        notebookId,
+        projectName: project.name,
+        blockedPossibleDuplicates,
+        existingNotebookDuplicates,
+        timestamp: Date.now(),
+      },
+    });
+
+    if (existingNotebookDuplicates.length > 0 && notebookScanSucceeded) {
+      updateStatus(
+        `[${project.name}] Notebook already contains duplicate source names (${existingNotebookDuplicates.length} groups).`,
+      );
+    }
+
+    if (blockedPossibleDuplicates.length > 0) {
+      const preview = blockedPossibleDuplicates.slice(0, 3).join(", ");
+      const suffix = blockedPossibleDuplicates.length > 3 ? ", ..." : "";
+      updateStatus(
+        `[${project.name}] Blocked ${blockedPossibleDuplicates.length} possible duplicate(s): ${preview}${suffix}`,
+      );
+    }
+
     if (filesNeeded.length === 0) {
+      if (blockedPossibleDuplicates.length > 0) {
+        return;
+      }
       updateStatus(`[${project.name}] All items up to date.`);
       return;
     }
@@ -430,6 +592,9 @@ async function _runSyncProcessInner(project) {
                 hash: fileInfo.hash,
                 dateModified: fileInfo.dateModified,
                 version: fileInfo.version,
+                normalizedFilename: normalizeFilename(
+                  fileInfo.filename || fileInfo.title,
+                ),
               },
             });
           }
@@ -453,7 +618,7 @@ async function _runSyncProcessInner(project) {
 
         // Update history for this batch immediately
         for (const item of batchData) {
-          const historyKey = `${notebookId}_${item.id}`;
+          const historyKey = buildHistoryKey(notebookId, item.id);
           syncHistory[historyKey] = {
             ...item.meta,
             timestamp: Date.now(),

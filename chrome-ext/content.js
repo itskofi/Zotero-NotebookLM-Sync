@@ -20,6 +20,26 @@ if (window.zoteroNotebookLMInjectorLoaded) {
             sendResponse(state);
             return true;
         }
+        if (request.action === "LIST_NOTEBOOK_SOURCES") {
+            try {
+                const scan = listNotebookSources();
+                sendResponse({
+                    success: true,
+                    sources: scan.sources,
+                    duplicates: scan.duplicates,
+                    scanMethod: scan.scanMethod
+                });
+            } catch (err) {
+                sendResponse({
+                    success: false,
+                    error: err.message,
+                    sources: [],
+                    duplicates: [],
+                    scanMethod: "error"
+                });
+            }
+            return true;
+        }
     });
 }
 
@@ -58,6 +78,148 @@ const SELECTORS = {
         'computer', 'device', 'local file'
     ]
 };
+
+const SOURCE_SCAN_SELECTORS = [
+    '[data-testid*="source" i]',
+    '[data-test-id*="source" i]',
+    '[class*="source-chip" i]',
+    '[class*="source-item" i]',
+    '[class*="source-row" i]',
+    '[aria-label*=".pdf" i]',
+    '[aria-label*=".docx" i]',
+    '[aria-label*=".txt" i]',
+    '[aria-label*=".md" i]'
+];
+
+const SOURCE_NAME_REGEX = /([^\n\r<>]{1,220}\.(?:pdf|txt|md|docx))/gi;
+
+function normalizeFilename(name) {
+    return String(name || "")
+        .toLowerCase()
+        .trim()
+        .replace(/\s+/g, " ");
+}
+
+function extractSourceNamesFromText(text) {
+    if (!text) return [];
+
+    const names = [];
+    let match;
+    SOURCE_NAME_REGEX.lastIndex = 0;
+
+    while ((match = SOURCE_NAME_REGEX.exec(text)) !== null) {
+        const cleaned = match[1]
+            .trim()
+            .replace(/\s+/g, " ")
+            .replace(/^[`"'“”‘’]+/, "")
+            .replace(/[`"'“”‘’,.;:!?]+$/, "");
+        if (cleaned) names.push(cleaned);
+    }
+
+    return names;
+}
+
+function collectSourceNamesFromNode(node) {
+    const perNode = new Set();
+    const texts = [
+        node?.getAttribute?.("title"),
+        node?.getAttribute?.("aria-label"),
+        node?.textContent
+    ];
+
+    for (const text of texts) {
+        const matches = extractSourceNamesFromText(text);
+        for (const match of matches) {
+            perNode.add(match);
+        }
+    }
+
+    return Array.from(perNode);
+}
+
+function collectSourceNamesViaSelectors() {
+    const names = [];
+
+    for (const selector of SOURCE_SCAN_SELECTORS) {
+        const nodes = document.querySelectorAll(selector);
+        for (const node of nodes) {
+            if (!isVisible(node)) continue;
+            names.push(...collectSourceNamesFromNode(node));
+        }
+    }
+
+    return names;
+}
+
+function collectSourceNamesViaTextFallback() {
+    const names = [];
+    const nodes = document.querySelectorAll(
+        'button, [role="button"], [role="listitem"], [role="treeitem"], a'
+    );
+
+    let scanned = 0;
+    for (const node of nodes) {
+        if (scanned >= 1200) break;
+        scanned += 1;
+        if (!isVisible(node)) continue;
+        names.push(...collectSourceNamesFromNode(node));
+    }
+
+    if (names.length === 0 && document.body) {
+        names.push(...extractSourceNamesFromText(document.body.innerText));
+    }
+
+    return names;
+}
+
+function buildSourceScanResult(rawNames, scanMethod) {
+    const byNormalized = new Map();
+
+    for (const rawName of rawNames) {
+        const normalizedName = normalizeFilename(rawName);
+        if (!normalizedName) continue;
+
+        const existing = byNormalized.get(normalizedName);
+        if (existing) {
+            existing.count += 1;
+            continue;
+        }
+
+        byNormalized.set(normalizedName, {
+            rawName,
+            count: 1
+        });
+    }
+
+    const sources = [];
+    const duplicates = [];
+    for (const [normalizedName, info] of byNormalized.entries()) {
+        sources.push({
+            rawName: info.rawName,
+            normalizedName
+        });
+        if (info.count > 1) {
+            duplicates.push({
+                normalizedName,
+                count: info.count
+            });
+        }
+    }
+
+    duplicates.sort((a, b) => b.count - a.count);
+
+    return { sources, duplicates, scanMethod };
+}
+
+function listNotebookSources() {
+    const selectorNames = collectSourceNamesViaSelectors();
+    if (selectorNames.length > 0) {
+        return buildSourceScanResult(selectorNames, "selector");
+    }
+
+    const fallbackNames = collectSourceNamesViaTextFallback();
+    return buildSourceScanResult(fallbackNames, "text-fallback");
+}
 
 /**
  * Wait for an element matching any of the selectors

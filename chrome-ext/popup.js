@@ -438,7 +438,8 @@ async function load() {
   const data = await chrome.storage.local.get("projects");
   projects = data.projects || [];
   render();
-  loadAutoSyncSettings();
+  await loadAutoSyncSettings();
+  await showLastDedupReportNotice();
 }
 
 function showToast(text, duration = 3000) {
@@ -446,6 +447,38 @@ function showToast(text, duration = 3000) {
   toast.classList.add("show");
   if (duration > 0) {
     setTimeout(() => toast.classList.remove("show"), duration);
+  }
+}
+
+async function showLastDedupReportNotice() {
+  try {
+    const data = await chrome.storage.local.get("lastDedupReport");
+    const report = data.lastDedupReport;
+    if (!report || !report.timestamp) return;
+
+    // Avoid showing stale messages from much older sync runs.
+    if (Date.now() - report.timestamp > 24 * 60 * 60 * 1000) return;
+
+    const blockedCount = Array.isArray(report.blockedPossibleDuplicates)
+      ? report.blockedPossibleDuplicates.length
+      : 0;
+    const duplicateGroupCount = Array.isArray(report.existingNotebookDuplicates)
+      ? report.existingNotebookDuplicates.length
+      : 0;
+
+    if (blockedCount === 0 && duplicateGroupCount === 0) return;
+
+    const parts = [];
+    if (blockedCount > 0) {
+      parts.push(`${blockedCount} possible duplicate(s) blocked`);
+    }
+    if (duplicateGroupCount > 0) {
+      parts.push(`${duplicateGroupCount} duplicate group(s) in notebook`);
+    }
+
+    showToast(`Last dedup report: ${parts.join(" | ")}`, 5000);
+  } catch (e) {
+    console.warn("[Popup] Failed to read dedup report:", e);
   }
 }
 
