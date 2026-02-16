@@ -3,7 +3,7 @@
  * Requires config.js and ExtPay.js to be loaded first.
  */
 
-const EXTPAY_ID = "notebooklm-sync"; // Must match your ExtensionPay dashboard ID
+const EXTPAY_ID = "zotero-notebooklm-sync"; // Must match your ExtensionPay dashboard ID
 
 let _extpay = null;
 let _cachedUser = null;
@@ -76,7 +76,13 @@ async function getTierConfig() {
 
 function openPaymentPage() {
   if (_extpay) {
+    console.log("[Licensing] Opening payment page...");
     _extpay.openPaymentPage();
+  } else {
+    console.error(
+      "[Licensing] Cannot open payment page: ExtPay not initialized. Make sure ExtPay.js is loaded and EXTPAY_ID is correct.",
+    );
+    alert("Payment system not configured. Please contact the developer.");
   }
 }
 
