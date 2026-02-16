@@ -1,48 +1,30 @@
-# Zotero to NotebookLM Connector
+# Zotero Connector for NotebookLM
 
-A seamless bridge between Zotero and Google NotebookLM. This project consists of a Zotero 7 plugin and a Chrome extension that work together to sync your research library into NotebookLM in seconds.
+Dieses Projekt verbindet Zotero mit Google NotebookLM, damit du Anhänge aus deiner Bibliothek direkt in Notebooks synchronisieren kannst. Die Lösung besteht aus zwei Teilen: einem Zotero-Plugin mit lokalen HTTP-Endpunkten und einer Chrome-Extension als Sync-Orchestrator. Du definierst in der Extension Projekte mit Filtern (Library, Collection, Tag) und optional einem festen Ziel-Notebook. Beim Sync werden Dateien aus Zotero geladen, gegen den lokalen Verlauf geprüft und dann gebündelt in NotebookLM hochgeladen. Für die Monetarisierung ist eine Free/Pro-Logik mit ExtPay integriert, inklusive Daily-Limits und Pro-Features wie Auto-Sync. Die Installation erfolgt ohne Build-System: die Extension wird lokal geladen, das Zotero-Plugin als XPI installiert.
 
-## Features
-- **Project-Based Sync**: Create custom sync rules (tags, collections, libraries) for different NotebookLM projects.
-- **Smart Duplicate Detection**: Only uploads new or modified files. Tracks sync history per notebook.
-- **Batch Upload**: Injects multiple files into NotebookLM simultaneously using a single click.
-- **Modern UI**: Clean, icon-driven interface for managing your research streams.
+## Schnellstart
 
----
+### 1) Zotero-Plugin installieren
+1. Öffne Zotero 7.
+2. Gehe zu **Tools -> Plugins**.
+3. Installiere `notebooklm-sync.xpi` über **Install Plugin From File...**.
+4. Starte Zotero neu.
 
-## Setup Instructions
+### 2) Chrome-Extension laden
+1. Öffne `chrome://extensions`.
+2. Aktiviere **Developer mode**.
+3. Klicke **Load unpacked** und wähle den Ordner `chrome-ext/`.
 
-### 1. Zotero Plugin Installation
-1. Download the `notebooklm-sync.xpi` file from this repository.
-2. In Zotero 7, go to **Tools -> Plugins**.
-3. Click the gear icon (⚙️) and select **"Install Plugin From File..."**.
-4. Select the `.xpi` file and click **Install**.
-5. Restart Zotero.
+### 3) Ersten Sync auslösen
+1. Öffne ein Notebook in NotebookLM.
+2. Öffne das Extension-Popup und lege ein Projekt an.
+3. Wähle Library/Collection/Tag und optional ein Ziel-Notebook.
+4. Klicke auf **Sync**.
 
-### 2. Chrome Extension Installation
-1. Open Google Chrome and go to `chrome://extensions`.
-2. Enable **"Developer mode"** (top right corner).
-3. Click **"Load unpacked"**.
-4. Select the `chrome-ext` folder from this repository.
+## Weiterführende Dokumentation
+- Plugin-Handbuch: [`docs/plugin-dokumentation.md`](docs/plugin-dokumentation.md)
+- Stripe/ExtPay-Setup: [`docs/setup-stripe-extpay.md`](docs/setup-stripe-extpay.md)
 
----
-
-## How to Sync
-1. Open **Zotero** and ensure it's running.
-2. Navigate to your target notebook in **Google NotebookLM**.
-3. Click the **Zotero Connector** icon in your Chrome extension bar.
-4. Click **"+"** to create a new project.
-5. Enter your project details:
-    - **Project Name**: Any name you'd like.
-    - **Zotero Collection**: (Optional) The name of a Zotero collection (e.g., `Thesis`). If blank, searches your whole library.
-    - **Sync Tag**: (Optional) A tag applied to items you want to sync (e.g., `#NotebookLM`).
-    - **Library ID**: Use `0` for your personal library (default). Use the numeric ID from the URL for Group libraries.
-6. Click **"Sync"** on your project card.
-7. The extension will automatically open the "Add Source" dialog and inject your Zotero files.
-
----
-
-## Troubleshooting
-- **Connection Error**: Ensure Zotero is open and the NotebookLM tab is fully loaded.
-- **No Files Found**: Double-check your Tag/Collection names. They are case-insensitive but must match the spelling.
-- **Debugger Warning**: Chrome shows a bar saying "Debugger is attached". This is normal as the extension uses the Chrome DevTools Protocol to safely automate the file injection.
+## Known Limitations
+- Während des Uploads zeigt Chrome „Debugger attached“ an. Das ist erwartet, weil der Upload über die Chrome-Debugger-API automatisiert wird.
+- Die Upload-Automation hängt von der aktuellen NotebookLM-Oberfläche ab. Wenn Google UI/Selektoren ändert, kann eine Anpassung in `chrome-ext/content.js` und `chrome-ext/background.js` nötig sein.
