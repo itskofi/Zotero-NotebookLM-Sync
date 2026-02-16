@@ -1,57 +1,78 @@
-# Plugin-Dokumentation: Zotero Connector for NotebookLM
+# Wie das Plugin funktioniert
 
-## 1. Zielbild und Komponenten
+## 1. Kurzüberblick
 
-Der Connector synchronisiert Anhänge aus Zotero in ein NotebookLM-Notebook. Die Architektur besteht aus zwei Modulen:
+Das Plugin synchronisiert Datei-Anhänge aus Zotero nach NotebookLM. Dafür arbeiten ein Zotero-Plugin (lokale API auf `localhost`) und eine Chrome-Extension zusammen.
+
+## 2. Komponenten und Rollen
 
 - Zotero-Plugin: `/Users/kofi/Documents/noterolm-sync/zotero-plugin/bootstrap.js`
-- Chrome-Extension Popup: `/Users/kofi/Documents/noterolm-sync/chrome-ext/popup.js`
-- Chrome-Extension Background: `/Users/kofi/Documents/noterolm-sync/chrome-ext/background.js`
-- Chrome-Extension Content-Script: `/Users/kofi/Documents/noterolm-sync/chrome-ext/content.js`
+- Popup-UI: `/Users/kofi/Documents/noterolm-sync/chrome-ext/popup.js`
+- Background-Orchestrierung: `/Users/kofi/Documents/noterolm-sync/chrome-ext/background.js`
+- NotebookLM-Injection: `/Users/kofi/Documents/noterolm-sync/chrome-ext/content.js`
+- Lizenzlogik (Free/Pro): `/Users/kofi/Documents/noterolm-sync/chrome-ext/licensing.js`
 
-### Verantwortlichkeiten
-- Zotero-Plugin stellt lokale Endpunkte auf `http://localhost:23119` bereit.
-- Popup verwaltet Projekte, Auto-Sync-Settings und Tier-UI.
-- Background orchestriert Sync, Deduplizierung, Tier-Limits und Upload-Injektion.
-- Content-Script öffnet den NotebookLM-Upload-Dialog robust über Selektor-Fallbacks.
+### Wer macht was
 
-## 2. Voraussetzungen
+- Das Zotero-Plugin liefert Listen und Dateien über HTTP.
+- Das Popup verwaltet Projekte, Filter, Notebook-Auswahl und Auto-Sync-Settings.
+- Das Background-Script führt den eigentlichen Sync aus.
+- Das Content-Script öffnet den Upload-Dialog in NotebookLM.
+- Der CDP-Teil im Background injiziert Dateien direkt in das File-Input.
 
-- Zotero 7 läuft lokal.
-- Das Plugin ist installiert und aktiv.
-- NotebookLM ist erreichbar (`https://notebooklm.google.com/*`).
-- Die Extension ist lokal über `chrome://extensions` geladen.
-- Für Pro-Features ist ExtPay konfiguriert.
+## 3. Datenfluss Ende-Zu-Ende
 
-## 3. Bedienung im Popup
+```text
+Popup (Projekt + Klick auf Sync)
+  -> chrome.runtime.sendMessage("START_SYNC")
+Background
+  -> POST http://localhost:23119/notebooklm/list
+  -> POST http://localhost:23119/notebooklm/file (pro Datei)
+  -> NotebookLM-Tab finden/öffnen
+  -> Upload-Dialog via content.js öffnen
+  -> Dateien per CDP ins File-Input injizieren
+  -> syncHistory + syncStats in chrome.storage.local schreiben
+Popup
+  <- Statusmeldungen über "UPDATE_STATUS"
+```
 
-### Projekte anlegen/bearbeiten/löschen
-- Neues Projekt über `+`.
-- Bearbeiten über Stift-Icon.
-- Löschen über Papierkorb-Icon.
+## 4. Ablauf bei einem manuellen Sync
 
-### Verfügbare Filter
-- **Library**: aus Zotero-Endpunkt `/notebooklm/libraries`.
-- **Collection**: aus `/notebooklm/collections`, inklusive Baumstruktur.
-- **Tag**: optionaler exakter Tag-Filter.
+1. Nutzer klickt im Popup auf `Sync`.
+2. Background prüft zuerst Tier-Limits (z. B. Daily-Limit im Free-Plan).
+3. Background lädt die Trefferliste aus Zotero (`/notebooklm/list`) anhand der Projektfilter.
+4. Treffer werden nach erlaubten MIME-Typen für den aktuellen Plan gefiltert.
+5. Ziel-Notebook wird bestimmt (bevorzugt gespeicherte `notebookId`, sonst ein bereits geöffneter NotebookLM-Tab).
+6. Über `syncHistory` wird geprüft, welche Dateien neu oder geändert sind.
+7. Dateien werden in Batches geladen (`/notebooklm/file`) und als Base64 vorbereitet.
+8. Upload-Dialog wird geöffnet, dann werden Dateien per CDP in den Datei-Input gesetzt.
+9. Bei Erfolg werden `syncHistory` und `syncStats` aktualisiert.
+10. Das Popup zeigt Fortschritt/Fehler per Toast an.
 
-### Notebook-Auswahl
-- Notebook-Auswahl wird aus Browser-History (`chrome.history.search`) befüllt.
-- Bei Auswahl wird `notebookId` + `notebookName` im Projekt gespeichert.
-- Ohne gespeicherte `notebookId` nutzt der Sync einen bereits geöffneten NotebookLM-Tab (Legacy-Fallback).
+## 5. Filterlogik im Projekt
 
-## 4. Sync-Ablauf (technisch korrekt, kompakt)
+Ein Projekt kann folgende Filter kombinieren:
 
-1. Background erhält `START_SYNC` mit Projekt.
-2. Abruf der Dateiliste über `POST /notebooklm/list`.
-3. Tier-bedingte MIME-Filterung und Limits.
-4. Ziel-Notebook bestimmen (bevorzugt gespeicherte `notebookId`, sonst offener NotebookLM-Tab).
-5. Deduplizierung über `syncHistory` (Schlüssel `${notebookId}_${fileId}`).
-6. Dateiinhalt laden über `POST /notebooklm/file`.
-7. Batch-Upload via Chrome Debugger Protocol (CDP), inklusive Dateiinjektion in den Upload-Input.
-8. `syncHistory` und `syncStats` aktualisieren.
+- `libraryID`
+- `collectionID` (bevorzugt) oder `collectionName` (Legacy)
+- `tag`
+- `notebookId` als festes Ziel-Notebook
 
-## 5. Free/Pro-Tiers (exakt aus `chrome-ext/config.js`)
+Wenn kein Filter gesetzt ist, wird entsprechend der Zotero-Suchlogik eine breite Auswahl synchronisiert (unter Berücksichtigung von Tier-Limits).
+
+## 6. Deduplizierung und Änderungslogik
+
+Der Sync lädt nicht blind alles erneut hoch. Es wird ein Schlüssel pro Notebook und Datei verwendet:
+
+- Key: `${notebookId}_${fileId}`
+- Speicherung in `syncHistory`
+- Vergleich über `hash`, `dateModified` und optional `version`
+
+Nur wenn eine Datei neu ist oder sich geändert hat, wird sie erneut in NotebookLM injiziert.
+
+## 7. Free/Pro-Verhalten
+
+Die Limits kommen direkt aus `/Users/kofi/Documents/noterolm-sync/chrome-ext/config.js`.
 
 | Merkmal | Free | Pro |
 |---|---:|---:|
@@ -65,89 +86,58 @@ Der Connector synchronisiert Anhänge aus Zotero in ein NotebookLM-Notebook. Die
 | `notebookHistoryDays` | 7 | 180 |
 | `notebookMaxResults` | 5 | 500 |
 
-## 6. Auto-Sync-Verhalten
+## 8. Auto-Sync
 
-### Alarm-basiert
-- Einstellung im Popup (`autoSyncSettings.intervalEnabled`, `intervalMinutes`).
-- Alarmname: `autoSync`.
-- Nur aktiv, wenn `tier.autoSyncEnabled === true` (Pro).
+Es gibt zwei Trigger:
 
-### Page-Visit-basiert
-- Trigger bei `tabs.onUpdated` auf NotebookLM-Notebook-URL.
-- Wenn `autoSyncSettings.syncOnPageVisit === true`, startet Auto-Sync mit kurzer Verzögerung.
+- Alarm-basiert (`chrome.alarms`, Intervall aus Popup)
+- Seitenaufruf-basiert (`tabs.onUpdated` auf NotebookLM-Notebook-URL)
 
-### Verhalten ohne gespeichertes Notebook
-- Hat **kein** Projekt eine `notebookId`, wird ein bereits geöffneter NotebookLM-Notebook-Tab benötigt.
-- Ohne solchen Tab wird Auto-Sync übersprungen.
+Wichtig:
 
-## 7. Lokale Datenhaltung (`chrome.storage.local`)
+- Auto-Sync ist nur im Pro-Plan aktiv.
+- Falls kein Projekt eine gespeicherte `notebookId` hat, muss mindestens ein NotebookLM-Notebook-Tab geöffnet sein.
 
-### `projects`
-Array mit Projektobjekten:
-- `name`
-- `tag`
-- `libraryID`
-- `libraryName`
-- `collectionID`
-- `collectionName`
-- `collection` (Legacy-Feld)
-- `notebookId`
-- `notebookName`
+## 9. Persistente Daten in `chrome.storage.local`
 
-### `syncHistory`
-Objekt mit Key `${notebookId}_${attachmentId}` und Werten:
-- `hash`
-- `dateModified`
-- `version`
-- `timestamp`
+- `projects`: Projektdefinitionen
+- `syncHistory`: Verlauf pro Notebook/Datei
+- `syncStats`: Tageszähler (`date`, `syncCount`, `fileCount`)
+- `autoSyncSettings`: Auto-Sync-Konfiguration
 
-### `syncStats`
-- `date` (`YYYY-MM-DD`)
-- `syncCount`
-- `fileCount`
-
-### `autoSyncSettings`
-- `syncOnPageVisit` (boolean)
-- `intervalEnabled` (boolean)
-- `intervalMinutes` (number)
-
-## 8. Schnittstellen (bestehend)
+## 10. Öffentliche interne Schnittstellen
 
 ### Zotero-Endpunkte
+
 - `POST /notebooklm/list`
 - `POST /notebooklm/file`
 - `POST /notebooklm/libraries`
 - `POST /notebooklm/collections`
 
 ### Runtime-Messages
+
 - `START_SYNC`
 - `UPDATE_AUTO_SYNC_SETTINGS`
 - `GET_TIER_INFO`
 - `UPDATE_STATUS`
 
-## 9. Troubleshooting-Matrix
+## 11. Häufige Fehlerbilder
 
-| Problem | Typische Ursache | Konkreter Fix |
+| Problem | Ursache | Fix |
 |---|---|---|
-| Zotero nicht erreichbar | Zotero nicht gestartet oder Plugin nicht aktiv | Zotero starten, Plugin prüfen, dann im Popup erneut Library laden |
-| Kein Notebook gewählt | Projekt hat keine `notebookId` und kein offener NotebookLM-Tab vorhanden | Projekt bearbeiten und Notebook auswählen oder NotebookLM-Notebook vorab öffnen |
-| Daily-Limit erreicht | Free-Limit `maxSyncsPerDay` ausgeschöpft | Bis Tagesreset warten oder auf Pro upgraden |
-| Upload-Dialog nicht gefunden | NotebookLM-UI/Selektoren haben sich geändert oder Seite nicht vollständig geladen | NotebookLM-Tab neu laden, Upload einmal manuell öffnen, ggf. Selektoren in `content.js`/`background.js` aktualisieren |
-| Content-Script nicht erreichbar | Content-Script nicht injiziert/Tab-Zustand inkonsistent | NotebookLM-Tab neu laden; Extension-Reload in `chrome://extensions`; Sync erneut starten |
+| „Cannot connect to Zotero“ | Zotero/Plugin nicht aktiv | Zotero starten und Plugin-Installation prüfen |
+| „No notebook selected“ | Keine `notebookId` und kein offener NotebookLM-Tab | Projekt auf ein Notebook setzen oder NotebookLM-Tab öffnen |
+| Daily-Limit erreicht | Free-Plan-Limit überschritten | Auf nächsten Tag warten oder auf Pro wechseln |
+| Upload-Dialog wird nicht gefunden | NotebookLM-UI geändert oder nicht fertig geladen | NotebookLM neu laden, ggf. Upload manuell öffnen, Selektoren prüfen |
+| Content-Script Kommunikation fehlschlägt | Tab-Zustand inkonsistent | NotebookLM-Tab reloaden, Extension neu laden, erneut syncen |
 
-## 10. Betrieb und Änderungen
+## 12. Betrieb und Wartung
 
-### Extension neu laden
-- `chrome://extensions` öffnen.
-- Bei der Extension auf **Reload** klicken.
+- Extension aktualisieren: `chrome://extensions` -> Reload.
+- Zotero-Plugin neu paketieren: Inhalt von `/Users/kofi/Documents/noterolm-sync/zotero-plugin/` zippen und als `.xpi` installieren.
 
-### Zotero-Plugin (XPI) neu bauen
-- Inhalt von `/Users/kofi/Documents/noterolm-sync/zotero-plugin/` als ZIP archivieren.
-- ZIP in `.xpi` umbenennen.
-- In Zotero erneut über „Install Plugin From File...“ installieren.
-
-### Manuelle Smoke-Checks nach Änderungen
-1. Popup öffnet und Projekt-CRUD funktioniert.
-2. Libraries/Collections werden aus Zotero geladen.
-3. Ein manueller Sync lädt mindestens eine Datei erfolgreich.
-4. Bei Free-Account greifen die Limits sichtbar.
+Nach Änderungen immer Smoke-Test ausführen:
+1. Projekt anlegen/bearbeiten/löschen.
+2. Libraries/Collections laden.
+3. Ein manueller Sync erfolgreich.
+4. Free/Pro-Gating verhält sich korrekt.
