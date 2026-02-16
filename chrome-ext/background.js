@@ -82,22 +82,29 @@ async function runAutoSync() {
   autoSyncLock = true;
 
   try {
-    // Check for open NotebookLM tab
-    const allTabs = await chrome.tabs.query({});
-    const nbTab = allTabs.find(
-      (t) =>
-        t.url && t.url.startsWith("https://notebooklm.google.com/notebook/"),
-    );
-    if (!nbTab) {
-      console.log("[Sync] Auto-sync skipped: no NotebookLM notebook tab open");
-      return;
-    }
-
     const data = await chrome.storage.local.get("projects");
     const projects = data.projects || [];
     if (projects.length === 0) {
       console.log("[Sync] Auto-sync skipped: no projects configured");
       return;
+    }
+
+    // Check if any project has a stored notebookId (can auto-navigate)
+    const hasStoredNotebook = projects.some((p) => p.notebookId);
+
+    // If no project has a stored notebook, require an open NLM tab
+    if (!hasStoredNotebook) {
+      const allTabs = await chrome.tabs.query({});
+      const nbTab = allTabs.find(
+        (t) =>
+          t.url && t.url.startsWith("https://notebooklm.google.com/notebook/"),
+      );
+      if (!nbTab) {
+        console.log(
+          "[Sync] Auto-sync skipped: no NotebookLM notebook tab open and no projects have a saved notebook",
+        );
+        return;
+      }
     }
 
     console.log(
@@ -123,6 +130,85 @@ async function runSyncProcess(project) {
   } finally {
     syncLock = false;
   }
+}
+
+// --- Tab Navigation Helpers ---
+
+function waitForTabLoad(tabId, timeoutMs = 30000) {
+  return new Promise((resolve, reject) => {
+    function cleanup() {
+      chrome.tabs.onUpdated.removeListener(listener);
+      clearTimeout(timer);
+    }
+
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error("Timed out waiting for notebook tab to load"));
+    }, timeoutMs);
+
+    function listener(updatedTabId, changeInfo) {
+      if (updatedTabId === tabId && changeInfo.status === "complete") {
+        cleanup();
+        // Extra delay for JS framework initialization
+        setTimeout(() => resolve(), 2000);
+      }
+    }
+
+    chrome.tabs.onUpdated.addListener(listener);
+  });
+}
+
+async function ensureNotebookTab(notebookId) {
+  const targetUrl = `https://notebooklm.google.com/notebook/${notebookId}`;
+  const allTabs = await chrome.tabs.query({});
+
+  // 1. Check if a tab already has this notebook open
+  const exactTab = allTabs.find(
+    (t) => t.url && t.url.includes(`/notebook/${notebookId}`),
+  );
+  if (exactTab) {
+    try {
+      // If already loaded and complete, just return it
+      if (exactTab.status === "complete") {
+        console.log(
+          `[Sync] Reusing existing tab ${exactTab.id} for notebook ${notebookId}`,
+        );
+        return exactTab;
+      }
+      // Otherwise wait for it to finish loading
+      await waitForTabLoad(exactTab.id);
+      return await chrome.tabs.get(exactTab.id);
+    } catch (e) {
+      console.warn(
+        `[Sync] Tab ${exactTab.id} became unavailable, falling through`,
+      );
+    }
+  }
+
+  // 2. Find any NotebookLM tab and navigate it
+  const nlmTab = allTabs.find(
+    (t) => t.url && t.url.startsWith("https://notebooklm.google.com"),
+  );
+  if (nlmTab) {
+    try {
+      console.log(
+        `[Sync] Navigating existing NLM tab ${nlmTab.id} to notebook ${notebookId}`,
+      );
+      await chrome.tabs.update(nlmTab.id, { url: targetUrl });
+      await waitForTabLoad(nlmTab.id);
+      return await chrome.tabs.get(nlmTab.id);
+    } catch (e) {
+      console.warn(
+        `[Sync] Failed to navigate tab ${nlmTab.id}, creating new tab`,
+      );
+    }
+  }
+
+  // 3. Open a new tab
+  console.log(`[Sync] Opening new tab for notebook ${notebookId}`);
+  const newTab = await chrome.tabs.create({ url: targetUrl, active: false });
+  await waitForTabLoad(newTab.id);
+  return await chrome.tabs.get(newTab.id);
 }
 
 async function _runSyncProcessInner(project) {
@@ -156,38 +242,50 @@ async function _runSyncProcessInner(project) {
       return;
     }
 
-    // 2. Find the NotebookLM tab and extract Notebook ID
-    // IMPORTANT: We must find a valid NotebookLM tab, not a chrome-extension:// URL
-    // which would cause "Cannot access a chrome-extension:// URL" error
-    const allTabs = await chrome.tabs.query({});
-    let tab = allTabs.find(
-      (t) => t.url && t.url.startsWith("https://notebooklm.google.com"),
-    );
+    // 2. Find or navigate to the NotebookLM tab
+    let tab;
+    let notebookId;
 
-    if (!tab) {
-      updateStatus(
-        "Error: Please open NotebookLM first (https://notebooklm.google.com).",
+    if (project.notebookId) {
+      // Project has a saved notebook — auto-navigate to it
+      updateStatus(`[${project.name}] Opening notebook...`);
+      try {
+        tab = await ensureNotebookTab(project.notebookId);
+        notebookId = project.notebookId;
+      } catch (e) {
+        updateStatus(`[${project.name}] Error: ${e.message}`);
+        return;
+      }
+    } else {
+      // Legacy: find an already-open NotebookLM tab
+      const allTabs = await chrome.tabs.query({});
+      tab = allTabs.find(
+        (t) => t.url && t.url.startsWith("https://notebooklm.google.com"),
       );
-      return;
-    }
 
-    // Verify the tab URL is valid for our operations
-    if (
-      !tab.url ||
-      tab.url.startsWith("chrome-extension://") ||
-      tab.url.startsWith("chrome://")
-    ) {
-      updateStatus(
-        "Error: Invalid tab. Please navigate to NotebookLM and try again.",
-      );
-      return;
-    }
+      if (!tab) {
+        updateStatus(
+          "Error: No notebook selected. Edit the project to choose a notebook, or open NotebookLM first.",
+        );
+        return;
+      }
 
-    // Extract Notebook ID from URL: e.g. https://notebooklm.google.com/notebook/ID
-    let notebookId = "global";
-    const match = tab.url.match(/\/notebook\/([^\/\?#]+)/);
-    if (match) {
-      notebookId = match[1];
+      if (
+        !tab.url ||
+        tab.url.startsWith("chrome-extension://") ||
+        tab.url.startsWith("chrome://")
+      ) {
+        updateStatus(
+          "Error: Invalid tab. Please navigate to NotebookLM and try again.",
+        );
+        return;
+      }
+
+      notebookId = "global";
+      const match = tab.url.match(/\/notebook\/([^\/\?#]+)/);
+      if (match) {
+        notebookId = match[1];
+      }
     }
     console.log(`[Sync] Target Notebook ID: ${notebookId}`);
 

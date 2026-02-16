@@ -161,6 +161,91 @@
     select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1); }
     select:disabled { background-color: #f1f5f9; color: var(--text-muted); cursor: not-allowed; }
 
+    .notebook-dropdown-wrapper { position: relative; }
+    .notebook-search-input {
+      width: 100%;
+      padding: 12px;
+      padding-right: 32px;
+      box-sizing: border-box;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-size: 14px;
+      outline: none;
+      transition: all 0.2s;
+    }
+    .notebook-search-input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1); }
+    .notebook-dropdown-clear {
+      position: absolute;
+      right: 8px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 18px;
+      cursor: pointer;
+      padding: 2px 6px;
+      border-radius: 4px;
+      line-height: 1;
+      display: none;
+      width: auto;
+    }
+    .notebook-dropdown-clear:hover { color: var(--text); background: #f1f5f9; }
+    .notebook-dropdown-list {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      right: 0;
+      max-height: 200px;
+      overflow-y: auto;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      margin-top: 4px;
+      z-index: 50;
+      display: none;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+    }
+    .notebook-dropdown-item {
+      padding: 10px 12px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .notebook-dropdown-item:hover, .notebook-dropdown-item.highlighted {
+      background: #f1f5f9;
+    }
+    .notebook-dropdown-item .nb-name {
+      font-weight: 600;
+      font-size: 13px;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .notebook-dropdown-item .nb-visited {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+    .notebook-dropdown-empty {
+      padding: 12px;
+      text-align: center;
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+    .notebook-refresh-btn {
+      background: none;
+      border: none;
+      color: var(--primary);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      padding: 4px 0;
+      margin-top: 4px;
+      width: auto;
+    }
+    .notebook-refresh-btn:hover { text-decoration: underline; }
+
     #zotero-status {
       background: #fef2f2;
       border: 1px solid #fecaca;
@@ -309,6 +394,19 @@
       <div class="field">
         <label>Sync Tag</label>
         <input type="text" id="p-tag" placeholder="Leave empty to sync all items">
+      </div>
+
+      <div class="field">
+        <label>NotebookLM Notebook</label>
+        <div class="notebook-dropdown-wrapper">
+          <input type="text" id="nb-search" class="notebook-search-input"
+                 placeholder="Search notebooks..." autocomplete="off">
+          <button type="button" id="nb-clear" class="notebook-dropdown-clear">&times;</button>
+          <div id="nb-dropdown" class="notebook-dropdown-list"></div>
+        </div>
+        <input type="hidden" id="p-notebookId">
+        <input type="hidden" id="p-notebookName">
+        <button type="button" id="nb-refresh" class="notebook-refresh-btn">Refresh notebook list</button>
       </div>
 
       <div class="form-actions">

@@ -19,7 +19,16 @@ const autoSyncIntervalEnabled = document.getElementById(
 );
 const autoSyncInterval = document.getElementById("auto-sync-interval");
 
+const nbSearchInput = document.getElementById("nb-search");
+const nbDropdown = document.getElementById("nb-dropdown");
+const nbClearBtn = document.getElementById("nb-clear");
+const nbRefreshBtn = document.getElementById("nb-refresh");
+const nbIdHidden = document.getElementById("p-notebookId");
+const nbNameHidden = document.getElementById("p-notebookName");
+
 let projects = [];
+let notebookCache = [];
+let highlightedIndex = -1;
 
 const ZOTERO_HOST = "http://localhost:23119";
 
@@ -32,6 +41,7 @@ const icons = {
   tag: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" y1="7" x2="7.01" y2="7"></line></svg>`,
   info: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>`,
   library: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></svg>`,
+  notebook: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="18" rx="2" ry="2"></rect><line x1="8" y1="3" x2="8" y2="21"></line></svg>`,
 };
 
 // Set the header icon
@@ -134,6 +144,191 @@ async function loadCollections(libraryID) {
   }
 }
 
+// --- Notebook History + Dropdown ---
+
+async function loadNotebooksFromHistory() {
+  const sixMonthsAgo = Date.now() - 180 * 24 * 60 * 60 * 1000;
+  try {
+    const results = await chrome.history.search({
+      text: "notebooklm.google.com/notebook/",
+      startTime: sixMonthsAgo,
+      maxResults: 500,
+    });
+
+    const byId = {};
+    for (const item of results) {
+      const match = item.url.match(/\/notebook\/([^\/\?#]+)/);
+      if (!match) continue;
+      const id = match[1];
+      let name = item.title || id;
+      // Strip common prefixes from NotebookLM titles
+      name = name.replace(/^NotebookLM\s*[-–—]\s*/i, "").trim();
+      if (!name) name = id;
+
+      if (!byId[id] || item.lastVisitTime > byId[id].lastVisitTime) {
+        byId[id] = { id, name, lastVisitTime: item.lastVisitTime };
+      }
+    }
+
+    notebookCache = Object.values(byId).sort(
+      (a, b) => b.lastVisitTime - a.lastVisitTime,
+    );
+  } catch (e) {
+    console.error("[Popup] Failed to load notebook history:", e);
+    notebookCache = [];
+  }
+}
+
+function formatTimeAgo(timestamp) {
+  const diff = Date.now() - timestamp;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "Just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return `${Math.floor(days / 30)}mo ago`;
+}
+
+function renderNotebookDropdown(filter = "") {
+  nbDropdown.innerHTML = "";
+  const lowerFilter = filter.toLowerCase();
+  const filtered = notebookCache.filter(
+    (nb) =>
+      nb.name.toLowerCase().includes(lowerFilter) ||
+      nb.id.toLowerCase().includes(lowerFilter),
+  );
+
+  if (filtered.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "notebook-dropdown-empty";
+    empty.textContent =
+      notebookCache.length === 0
+        ? "No notebooks found in history"
+        : "No matching notebooks";
+    nbDropdown.appendChild(empty);
+    highlightedIndex = -1;
+    return;
+  }
+
+  filtered.forEach((nb, i) => {
+    const item = document.createElement("div");
+    item.className = "notebook-dropdown-item";
+    item.dataset.id = nb.id;
+    item.dataset.name = nb.name;
+    item.dataset.index = i;
+    item.innerHTML = `
+      <div class="nb-name">${escapeHtml(nb.name)}</div>
+      <div class="nb-visited">Visited ${formatTimeAgo(nb.lastVisitTime)}</div>
+    `;
+    item.addEventListener("mousedown", (e) => {
+      e.preventDefault(); // Prevent blur before selection
+      selectNotebook(nb.id, nb.name);
+      closeNotebookDropdown();
+    });
+    nbDropdown.appendChild(item);
+  });
+  highlightedIndex = -1;
+}
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function selectNotebook(id, name) {
+  nbIdHidden.value = id;
+  nbNameHidden.value = name;
+  nbSearchInput.value = name;
+  nbClearBtn.style.display = "block";
+}
+
+function clearNotebookSelection() {
+  nbIdHidden.value = "";
+  nbNameHidden.value = "";
+  nbSearchInput.value = "";
+  nbClearBtn.style.display = "none";
+}
+
+function openNotebookDropdown() {
+  renderNotebookDropdown(nbSearchInput.value);
+  nbDropdown.style.display = "block";
+}
+
+function closeNotebookDropdown() {
+  nbDropdown.style.display = "none";
+  highlightedIndex = -1;
+}
+
+function updateHighlight() {
+  const items = nbDropdown.querySelectorAll(".notebook-dropdown-item");
+  items.forEach((item, i) => {
+    item.classList.toggle("highlighted", i === highlightedIndex);
+  });
+  if (highlightedIndex >= 0 && items[highlightedIndex]) {
+    items[highlightedIndex].scrollIntoView({ block: "nearest" });
+  }
+}
+
+nbSearchInput.addEventListener("focus", () => openNotebookDropdown());
+nbSearchInput.addEventListener("input", () => {
+  // If user types, clear the hidden selection (they're searching again)
+  if (nbIdHidden.value) {
+    nbIdHidden.value = "";
+    nbNameHidden.value = "";
+    nbClearBtn.style.display = "none";
+  }
+  renderNotebookDropdown(nbSearchInput.value);
+  nbDropdown.style.display = "block";
+});
+nbSearchInput.addEventListener("blur", () => {
+  // Small delay to allow mousedown on dropdown items to fire first
+  setTimeout(() => closeNotebookDropdown(), 150);
+});
+nbSearchInput.addEventListener("keydown", (e) => {
+  const items = nbDropdown.querySelectorAll(".notebook-dropdown-item");
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    if (nbDropdown.style.display !== "block") openNotebookDropdown();
+    if (items.length > 0) {
+      highlightedIndex = Math.min(highlightedIndex + 1, items.length - 1);
+      updateHighlight();
+    }
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    if (items.length > 0) {
+      highlightedIndex = Math.max(highlightedIndex - 1, 0);
+      updateHighlight();
+    }
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    if (highlightedIndex >= 0 && items[highlightedIndex]) {
+      const item = items[highlightedIndex];
+      selectNotebook(item.dataset.id, item.dataset.name);
+      closeNotebookDropdown();
+    }
+  } else if (e.key === "Escape") {
+    closeNotebookDropdown();
+    nbSearchInput.blur();
+  }
+});
+
+nbClearBtn.addEventListener("click", () => {
+  clearNotebookSelection();
+  nbSearchInput.focus();
+});
+
+nbRefreshBtn.addEventListener("click", async () => {
+  nbRefreshBtn.textContent = "Loading...";
+  await loadNotebooksFromHistory();
+  nbRefreshBtn.textContent = "Refresh notebook list";
+  if (nbDropdown.style.display === "block") {
+    renderNotebookDropdown(nbSearchInput.value);
+  }
+});
+
 // Wire library change -> reload collections
 librarySelect.addEventListener("change", () => {
   if (librarySelect.value) {
@@ -198,6 +393,14 @@ function render() {
                     <div class="meta-item">
                         ${icons.library}
                         <span>${libDisplay}</span>
+                    </div>
+                `;
+      }
+      if (p.notebookName) {
+        metaHtml += `
+                    <div class="meta-item">
+                        ${icons.notebook}
+                        <span>${p.notebookName}</span>
                     </div>
                 `;
       }
@@ -275,8 +478,17 @@ async function showForm(p = null, idx = -1) {
   collectionSelect.innerHTML =
     '<option value="">Select a library first</option>';
 
+  // Reset notebook selection
+  clearNotebookSelection();
+  if (p && p.notebookId) {
+    selectNotebook(p.notebookId, p.notebookName || p.notebookId);
+  }
+
   mainView.classList.add("hidden");
   formView.classList.remove("hidden");
+
+  // Load notebooks from history (non-blocking)
+  loadNotebooksFromHistory();
 
   // Load libraries from Zotero
   const loaded = await loadLibraries();
@@ -329,6 +541,8 @@ saveBtn.addEventListener("click", async () => {
     collectionName: colOption ? colOption.dataset.name || "" : "",
     // Keep legacy 'collection' field for backward compat
     collection: colOption ? colOption.dataset.name || "" : "",
+    notebookId: nbIdHidden.value,
+    notebookName: nbNameHidden.value,
   };
 
   if (idx === -1) {
