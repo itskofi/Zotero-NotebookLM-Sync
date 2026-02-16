@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    :root {
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --bg: #ffffff;
+      --card-bg: #f8fafc;
+      --text: #1e293b;
+      --text-muted: #64748b;
+      --border: #e2e8f0;
+      --danger: #ef4444;
+    }
+
+    body { 
+      width: 320px; 
+      margin: 0;
+      padding: 20px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+    }
+
+    h3 { margin: 0; font-size: 20px; font-weight: 800; color: #0f172a; letter-spacing: -0.02em; }
+
+    .add-btn {
+      background: var(--primary);
+      color: white;
+      border: none;
+      width: 40px;
+      height: 40px;
+      border-radius: 12px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      box-shadow: 0 4px 12px rgba(37, 99, 235, 0.2);
+    }
+    .add-btn:hover { background: var(--primary-hover); transform: translateY(-1px); }
+
+    .project-card {
+      background: var(--card-bg);
+      border-radius: 16px;
+      padding: 18px;
+      margin-bottom: 16px;
+      border: 1px solid var(--border);
+      transition: all 0.2s;
+    }
+    .project-card:hover { border-color: var(--primary); box-shadow: 0 4px 12px rgba(0,0,0,0.03); }
+
+    .project-title { 
+      font-weight: 700; 
+      font-size: 16px; 
+      margin-bottom: 8px;
+      color: #0f172a;
+      text-transform: capitalize;
+    }
+
+    .project-meta { 
+      font-size: 12px; 
+      color: var(--text-muted); 
+      margin-bottom: 16px;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .meta-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      background: #ffffff;
+      padding: 4px 8px;
+      border-radius: 6px;
+      border: 1px solid #eef2f6;
+    }
+
+    .actions { display: flex; gap: 8px; }
+    
+    button { 
+      font-family: inherit;
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.2s;
+      border: 1px solid transparent;
+    }
+
+    .btn-sync { 
+      background: var(--primary); 
+      color: white; 
+      flex: 1; 
+      border: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+    .btn-sync:hover { background: var(--primary-hover); }
+
+    .btn-icon { 
+      background: #ffffff; 
+      color: var(--text-muted);
+      width: 40px;
+      padding: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--border);
+    }
+    .btn-icon:hover { border-color: #cbd5e1; color: var(--text); }
+    .btn-icon.delete:hover { background: #fef2f2; border-color: #fecaca; color: var(--danger); }
+
+    /* Form Styles */
+    .form-container {
+      background: #ffffff;
+    }
+    .form-title { font-weight: 800; margin-bottom: 20px; font-size: 18px; color: #0f172a; }
+    
+    .field { margin-bottom: 16px; }
+    label { display: block; font-size: 12px; font-weight: 700; margin-bottom: 6px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+    input { 
+      width: 100%; 
+      padding: 12px; 
+      box-sizing: border-box; 
+      border: 1px solid var(--border); 
+      border-radius: 10px;
+      font-size: 14px;
+      outline: none;
+      transition: all 0.2s;
+    }
+    input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1); }
+
+    select {
+      width: 100%;
+      padding: 12px;
+      box-sizing: border-box;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-size: 14px;
+      outline: none;
+      transition: all 0.2s;
+      background: var(--bg);
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 12px center;
+      cursor: pointer;
+    }
+    select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1); }
+    select:disabled { background-color: #f1f5f9; color: var(--text-muted); cursor: not-allowed; }
+
+    #zotero-status {
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      color: #991b1b;
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-size: 12px;
+      font-weight: 500;
+      margin-bottom: 16px;
+    }
+    #zotero-status.hidden { display: none; }
+
+    .auto-sync-section {
+      border-top: 1px solid var(--border);
+      margin-top: 20px;
+      padding-top: 16px;
+    }
+    .auto-sync-section h4 {
+      margin: 0 0 12px;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .auto-sync-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+      font-size: 13px;
+    }
+    .auto-sync-row input[type="checkbox"] {
+      width: auto;
+      margin: 0;
+      cursor: pointer;
+    }
+    .auto-sync-row select {
+      width: auto;
+      padding: 6px 30px 6px 10px;
+      font-size: 13px;
+      border-radius: 8px;
+    }
+    .auto-sync-row label {
+      display: inline;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text);
+      text-transform: none;
+      letter-spacing: normal;
+      margin: 0;
+    }
+
+    .form-actions { display: flex; gap: 10px; margin-top: 24px; }
+    .btn-save { background: var(--primary); color: white; flex: 2; border: none; }
+    .btn-cancel { background: #f1f5f9; color: var(--text-muted); flex: 1; border: none; }
+
+    .hidden { display: none; }
+    #empty-state { text-align: center; color: var(--text-muted); padding: 48px 0; font-size: 14px; }
+
+    /* Status Notifications */
+    #status-toast {
+        position: fixed;
+        bottom: 12px;
+        left: 12px;
+        right: 12px;
+        background: #0f172a;
+        color: white;
+        padding: 10px 16px;
+        border-radius: 10px;
+        font-size: 12px;
+        font-weight: 500;
+        transform: translateY(100px);
+        transition: transform 0.3s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+        z-index: 100;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    #status-toast.show { transform: translateY(0); }
+
+  </style>
+</head>
+<body>
+  <div id="main-view">
+    <div class="header">
+      <h3>Projects</h3>
+      <button id="add-project-btn" class="add-btn" title="New Project">
+        <i data-lucide="plus" style="width: 20px; height: 20px;"></i>
+      </button>
+    </div>
+
+    <div id="project-list">
+      <!-- Projects -->
+    </div>
+
+    <div id="empty-state" class="hidden">
+      No projects found. Create one to begin.
+    </div>
+
+    <div class="auto-sync-section">
+      <h4>Auto-Sync</h4>
+      <div class="auto-sync-row">
+        <input type="checkbox" id="auto-sync-page-visit">
+        <label for="auto-sync-page-visit">Sync when visiting NotebookLM</label>
+      </div>
+      <div class="auto-sync-row">
+        <input type="checkbox" id="auto-sync-interval-enabled">
+        <label for="auto-sync-interval-enabled">Sync every</label>
+        <select id="auto-sync-interval" disabled>
+          <option value="15">15 min</option>
+          <option value="30">30 min</option>
+          <option value="60">1 hour</option>
+          <option value="120">2 hours</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div id="form-view" class="hidden">
+    <div class="form-container">
+      <div class="form-title" id="form-title-text">New Project</div>
+      <input type="hidden" id="edit-id">
+      
+      <div class="field">
+        <label>Project Name</label>
+        <input type="text" id="p-name" placeholder="e.g. My Thesis">
+      </div>
+      
+      <div id="zotero-status" class="hidden">Cannot connect to Zotero. Make sure Zotero is running.</div>
+
+      <div class="field">
+        <label>Library</label>
+        <select id="p-library" disabled>
+          <option value="">Loading...</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>Collection</label>
+        <select id="p-collection" disabled>
+          <option value="">Select a library first</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>Sync Tag</label>
+        <input type="text" id="p-tag" placeholder="Leave empty to sync all items">
+      </div>
+
+      <div class="form-actions">
+        <button id="save-btn" class="btn-save">Save Project</button>
+        <button id="cancel-btn" class="btn-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="status-toast">
+    <i data-lucide="info" style="width: 14px; height: 14px;"></i>
+    <span id="toast-text">Ready</span>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
