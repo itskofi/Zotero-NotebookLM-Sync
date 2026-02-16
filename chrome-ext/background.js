@@ -11,7 +11,7 @@ initLicensing();
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "START_SYNC") {
-    runSyncProcess(request.project);
+    runSyncProcess(request.project, { interactive: true });
     sendResponse({ status: `Syncing "${request.project.name}"...` });
   } else if (request.action === "UPDATE_AUTO_SYNC_SETTINGS") {
     chrome.storage.local
@@ -137,25 +137,36 @@ async function runAutoSync() {
       `[Sync] Auto-sync starting for ${projects.length} project(s)...`,
     );
     for (const project of projects) {
-      await runSyncProcess(project);
+      await runSyncProcess(project, { interactive: false });
     }
   } finally {
     autoSyncLock = false;
   }
 }
 
-async function runSyncProcess(project) {
+async function runSyncProcess(project, options = {}) {
   if (syncLock) {
     console.log(`[Sync] Skipping "${project.name}" — sync already in progress`);
+    notifySyncDone(project?.name || "");
     return;
   }
   syncLock = true;
 
   try {
-    await _runSyncProcessInner(project);
+    await _runSyncProcessInner(project, options);
   } finally {
     syncLock = false;
+    notifySyncDone(project?.name || "");
   }
+}
+
+function notifySyncDone(projectName) {
+  chrome.runtime
+    .sendMessage({
+      action: "SYNC_DONE",
+      projectName,
+    })
+    .catch(() => {});
 }
 
 function normalizeFilename(name) {
@@ -197,6 +208,35 @@ async function listNotebookSources(tabId) {
     duplicates: Array.isArray(response.duplicates) ? response.duplicates : [],
     scanMethod: response.scanMethod || "unknown",
   };
+}
+
+async function requestDuplicateImportDecision(projectName, duplicateNames) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(
+      {
+        action: "DEDUP_DECISION_REQUIRED",
+        projectName,
+        files: duplicateNames,
+      },
+      (response) => {
+        if (chrome.runtime.lastError) {
+          console.warn(
+            "[Sync] Could not request duplicate decision from UI:",
+            chrome.runtime.lastError.message,
+          );
+          resolve("skip");
+          return;
+        }
+
+        if (response?.decision === "import_anyway") {
+          resolve("import_anyway");
+          return;
+        }
+
+        resolve("skip");
+      },
+    );
+  });
 }
 
 // --- Tab Navigation Helpers ---
@@ -278,7 +318,7 @@ async function ensureNotebookTab(notebookId) {
   return await chrome.tabs.get(newTab.id);
 }
 
-async function _runSyncProcessInner(project) {
+async function _runSyncProcessInner(project, options = {}) {
   updateStatus(`[${project.name}] Getting list...`);
 
   // --- Tier enforcement: check daily sync limit ---
@@ -490,22 +530,15 @@ async function _runSyncProcessInner(project) {
       return { file, ...decision };
     });
 
-    const filesNeeded = dedupDecisions
+    let filesNeeded = dedupDecisions
       .filter((d) => d.decision === "upload")
       .map((d) => d.file);
-    const blockedPossibleDuplicates = dedupDecisions
+    const possibleDuplicateFiles = dedupDecisions
       .filter((d) => d.decision === "skip_possible_duplicate")
-      .map((d) => d.file.filename || d.file.title || `attachment-${d.file.id}`);
-
-    await chrome.storage.local.set({
-      lastDedupReport: {
-        notebookId,
-        projectName: project.name,
-        blockedPossibleDuplicates,
-        existingNotebookDuplicates,
-        timestamp: Date.now(),
-      },
-    });
+      .map((d) => d.file);
+    let blockedPossibleDuplicates = possibleDuplicateFiles
+      .map((file) => file.filename || file.title || `attachment-${file.id}`);
+    let duplicateDecision = "not_needed";
 
     if (existingNotebookDuplicates.length > 0 && notebookScanSucceeded) {
       updateStatus(
@@ -514,12 +547,45 @@ async function _runSyncProcessInner(project) {
     }
 
     if (blockedPossibleDuplicates.length > 0) {
-      const preview = blockedPossibleDuplicates.slice(0, 3).join(", ");
-      const suffix = blockedPossibleDuplicates.length > 3 ? ", ..." : "";
-      updateStatus(
-        `[${project.name}] Blocked ${blockedPossibleDuplicates.length} possible duplicate(s): ${preview}${suffix}`,
-      );
+      if (options.interactive) {
+        duplicateDecision = await requestDuplicateImportDecision(
+          project.name,
+          blockedPossibleDuplicates,
+        );
+
+        if (duplicateDecision === "import_anyway") {
+          const byId = new Map(filesNeeded.map((file) => [file.id, file]));
+          for (const file of possibleDuplicateFiles) {
+            byId.set(file.id, file);
+          }
+          filesNeeded = Array.from(byId.values());
+          blockedPossibleDuplicates = [];
+          updateStatus(
+            `[${project.name}] User chose to import ${possibleDuplicateFiles.length} possible duplicate(s).`,
+          );
+        } else {
+          updateStatus(
+            `[${project.name}] Skipped ${blockedPossibleDuplicates.length} possible duplicate(s).`,
+          );
+        }
+      } else {
+        duplicateDecision = "skip";
+        updateStatus(
+          `[${project.name}] Auto-sync skipped ${blockedPossibleDuplicates.length} possible duplicate(s).`,
+        );
+      }
     }
+
+    await chrome.storage.local.set({
+      lastDedupReport: {
+        notebookId,
+        projectName: project.name,
+        blockedPossibleDuplicates,
+        existingNotebookDuplicates,
+        duplicateDecision,
+        timestamp: Date.now(),
+      },
+    });
 
     if (filesNeeded.length === 0) {
       if (blockedPossibleDuplicates.length > 0) {

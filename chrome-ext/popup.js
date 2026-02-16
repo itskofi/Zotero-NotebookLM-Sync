@@ -37,13 +37,25 @@ const upgradePromptText = document.getElementById("upgrade-prompt-text");
 const upgradePromptBtn = document.getElementById("upgrade-prompt-btn");
 const autoSyncSection = document.getElementById("auto-sync-section");
 const autoSyncProLabel = document.getElementById("auto-sync-pro-label");
+const dedupDecisionModal = document.getElementById("dedup-decision-modal");
+const dedupDecisionTitle = document.getElementById("dedup-decision-title");
+const dedupDecisionText = document.getElementById("dedup-decision-text");
+const dedupDecisionList = document.getElementById("dedup-decision-list");
+const dedupDecisionMore = document.getElementById("dedup-decision-more");
+const dedupSkipBtn = document.getElementById("dedup-skip-btn");
+const dedupImportBtn = document.getElementById("dedup-import-btn");
 
 let projects = [];
 let notebookCache = [];
 let highlightedIndex = -1;
 let currentTierInfo = null; // { pro, tier, stats }
+let dedupDecisionResolver = null;
+let toastHideTimer = null;
 
 const ZOTERO_HOST = "http://localhost:23119";
+const TOAST_MIN_MS = 3000;
+const TOAST_MAX_MS = 5000;
+const TOAST_DEFAULT_MS = 4000;
 
 // Initialize ExtPay for popup (no startBackground — that runs in the service worker)
 initLicensing(false);
@@ -62,7 +74,12 @@ const icons = {
 
 // Set the header icon
 document.getElementById("add-project-btn").innerHTML = icons.plus;
-document.querySelector("#status-toast i").outerHTML = icons.info;
+const toastIconEl = document.querySelector("#status-toast i, #status-toast svg");
+if (toastIconEl) {
+  toastIconEl.outerHTML = icons.info;
+} else {
+  toast.insertAdjacentHTML("afterbegin", icons.info);
+}
 
 // --- Tier UI ---
 
@@ -134,6 +151,68 @@ function showUpgradePrompt(message) {
   upgradePromptText.textContent = message;
   upgradePrompt.classList.remove("hidden");
 }
+
+function stopAllSyncSpinners() {
+  document.querySelectorAll(".btn-sync svg").forEach((icon) => {
+    icon.style.animation = "";
+  });
+}
+
+function closeDedupDecisionModal(decision) {
+  if (!dedupDecisionResolver) return;
+  const resolve = dedupDecisionResolver;
+  dedupDecisionResolver = null;
+  dedupDecisionModal.classList.add("hidden");
+  resolve(decision);
+}
+
+function openDedupDecisionModal(projectName, files = []) {
+  if (dedupDecisionResolver) {
+    closeDedupDecisionModal("skip");
+  }
+
+  dedupDecisionTitle.textContent = `Possible duplicates in "${projectName}"`;
+  dedupDecisionText.textContent = `Detected ${files.length} possible duplicate(s). Choose whether to import anyway or skip.`;
+  dedupDecisionList.innerHTML = "";
+
+  if (files.length === 0) {
+    const item = document.createElement("div");
+    item.className = "dedup-modal-item";
+    item.textContent = "No filenames provided by scanner.";
+    dedupDecisionList.appendChild(item);
+  } else {
+    files.forEach((fileName, idx) => {
+      const item = document.createElement("div");
+      item.className = "dedup-modal-item";
+      item.textContent = `${idx + 1}. ${fileName}`;
+      dedupDecisionList.appendChild(item);
+    });
+  }
+
+  dedupDecisionMore.textContent = "";
+  dedupDecisionMore.classList.add("hidden");
+
+  dedupDecisionModal.classList.remove("hidden");
+
+  return new Promise((resolve) => {
+    dedupDecisionResolver = resolve;
+  });
+}
+
+dedupSkipBtn.addEventListener("click", () => closeDedupDecisionModal("skip"));
+dedupImportBtn.addEventListener("click", () =>
+  closeDedupDecisionModal("import_anyway"),
+);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !dedupDecisionModal.classList.contains("hidden")) {
+    closeDedupDecisionModal("skip");
+  }
+});
+dedupDecisionModal.addEventListener("click", (e) => {
+  if (e.target === dedupDecisionModal) {
+    closeDedupDecisionModal("skip");
+  }
+});
 
 // --- Zotero Fetch Helper ---
 
@@ -442,12 +521,25 @@ async function load() {
   await showLastDedupReportNotice();
 }
 
-function showToast(text, duration = 3000) {
+function showToast(text, duration = TOAST_DEFAULT_MS) {
   toastText.textContent = text;
   toast.classList.add("show");
-  if (duration > 0) {
-    setTimeout(() => toast.classList.remove("show"), duration);
+
+  if (toastHideTimer) {
+    clearTimeout(toastHideTimer);
   }
+
+  const requestedDuration = Number(duration);
+  const baseDuration =
+    Number.isFinite(requestedDuration) && requestedDuration > 0
+      ? requestedDuration
+      : TOAST_DEFAULT_MS;
+  const hideAfter = Math.min(TOAST_MAX_MS, Math.max(TOAST_MIN_MS, baseDuration));
+
+  toastHideTimer = setTimeout(() => {
+    toast.classList.remove("show");
+    toastHideTimer = null;
+  }, hideAfter);
 }
 
 async function showLastDedupReportNotice() {
@@ -554,6 +646,7 @@ function render() {
   document.querySelectorAll(".btn-sync").forEach((b) =>
     b.addEventListener("click", (e) => {
       const btn = e.currentTarget;
+      stopAllSyncSpinners();
       const icon = btn.querySelector("svg");
       if (icon) icon.style.animation = "spin 1s linear infinite";
 
@@ -712,30 +805,36 @@ function startSync(project) {
     { action: "START_SYNC", project: project },
     (res) => {
       if (chrome.runtime.lastError) {
+        stopAllSyncSpinners();
         showToast("Error connecting to background script.");
       }
     },
   );
 }
 
-chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.action === "UPDATE_STATUS") {
-    showToast(
-      msg.text,
-      msg.text.includes("complete") || msg.text.includes("Error") ? 4000 : 0,
-    );
-
-    // Stop spinning if complete, and refresh tier stats
-    if (
-      msg.text.includes("complete") ||
-      msg.text.includes("Error") ||
-      msg.text.includes("up to date") ||
-      msg.text.includes("Success")
-    ) {
-      render();
-      updateTierUI();
-    }
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.action === "DEDUP_DECISION_REQUIRED") {
+    const files = Array.isArray(msg.files) ? msg.files : [];
+    const projectName = msg.projectName || "this project";
+    openDedupDecisionModal(projectName, files).then((decision) => {
+      sendResponse({ decision });
+    });
+    return true;
   }
+
+  if (msg.action === "UPDATE_STATUS") {
+    showToast(msg.text, 0);
+    return false;
+  }
+
+  if (msg.action === "SYNC_DONE") {
+    stopAllSyncSpinners();
+    render();
+    updateTierUI();
+    return false;
+  }
+
+  return false;
 });
 
 // --- Auto-Sync Settings ---
