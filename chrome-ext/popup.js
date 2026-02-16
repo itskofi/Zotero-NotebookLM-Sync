@@ -640,9 +640,10 @@ saveBtn.addEventListener("click", async () => {
   if (idx === -1) {
     // Double-check project limit before saving (in case state changed)
     const tier = currentTierInfo ? currentTierInfo.tier : TIERS.free;
-    if (tier.maxProjects !== Infinity && projects.length >= tier.maxProjects) {
+    const maxProjects = tier?.maxProjects ?? TIERS.free.maxProjects;
+    if (maxProjects !== Infinity && projects.length >= maxProjects) {
       showUpgradePrompt(
-        `You've reached the free project limit (${tier.maxProjects}). Upgrade to Pro for unlimited projects.`,
+        `You've reached the free project limit (${maxProjects}). Upgrade to Pro for unlimited projects.`,
       );
       hideForm();
       return;
@@ -659,9 +660,10 @@ saveBtn.addEventListener("click", async () => {
 addBtn.addEventListener("click", () => {
   // Tier enforcement: project limit
   const tier = currentTierInfo ? currentTierInfo.tier : TIERS.free;
-  if (tier.maxProjects !== Infinity && projects.length >= tier.maxProjects) {
+  const maxProjects = tier?.maxProjects ?? TIERS.free.maxProjects;
+  if (maxProjects !== Infinity && projects.length >= maxProjects) {
     showUpgradePrompt(
-      `You've reached the free project limit (${tier.maxProjects}). Upgrade to Pro for unlimited projects.`,
+      `You've reached the free project limit (${maxProjects}). Upgrade to Pro for unlimited projects.`,
     );
     return;
   }
