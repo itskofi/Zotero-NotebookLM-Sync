@@ -28,6 +28,7 @@ const nbNameHidden = document.getElementById("p-notebookName");
 
 // Tier UI elements
 const tierBadge = document.getElementById("tier-badge");
+const restoreProBtn = document.getElementById("restore-pro-btn");
 const upgradeBanner = document.getElementById("upgrade-banner");
 const syncStatsEl = document.getElementById("sync-stats");
 const syncStatsText = document.getElementById("sync-stats-text");
@@ -74,7 +75,9 @@ const icons = {
 
 // Set the header icon
 document.getElementById("add-project-btn").innerHTML = icons.plus;
-const toastIconEl = document.querySelector("#status-toast i, #status-toast svg");
+const toastIconEl = document.querySelector(
+  "#status-toast i, #status-toast svg",
+);
 if (toastIconEl) {
   toastIconEl.outerHTML = icons.info;
 } else {
@@ -90,6 +93,26 @@ function triggerUpgrade() {
 
 upgradeBanner.addEventListener("click", triggerUpgrade);
 upgradePromptBtn.addEventListener("click", triggerUpgrade);
+
+restoreProBtn.addEventListener("click", async () => {
+  restoreProBtn.textContent = "Checking...";
+  restoreProBtn.disabled = true;
+  try {
+    currentTierInfo = await new Promise((resolve) => {
+      chrome.runtime.sendMessage({ action: "REFRESH_LICENSE" }, resolve);
+    });
+    const { pro } = currentTierInfo;
+    if (pro) {
+      showToast("Pro license verified!", 3000);
+    } else {
+      showToast("No active Pro license found.", 4000);
+    }
+  } finally {
+    restoreProBtn.textContent = "Restore Pro";
+    restoreProBtn.disabled = false;
+    updateTierUI();
+  }
+});
 
 async function updateTierUI() {
   // Ask background for tier info (it has the ExtPay instance)
@@ -110,6 +133,13 @@ async function updateTierUI() {
   // Badge
   tierBadge.textContent = pro ? "Pro" : "Free";
   tierBadge.className = "tier-badge " + (pro ? "pro" : "free");
+
+  // Restore Pro button (shown only for Free users)
+  if (pro) {
+    restoreProBtn.classList.add("hidden");
+  } else {
+    restoreProBtn.classList.remove("hidden");
+  }
 
   // Upgrade banner
   if (pro) {
@@ -534,7 +564,10 @@ function showToast(text, duration = TOAST_DEFAULT_MS) {
     Number.isFinite(requestedDuration) && requestedDuration > 0
       ? requestedDuration
       : TOAST_DEFAULT_MS;
-  const hideAfter = Math.min(TOAST_MAX_MS, Math.max(TOAST_MIN_MS, baseDuration));
+  const hideAfter = Math.min(
+    TOAST_MAX_MS,
+    Math.max(TOAST_MIN_MS, baseDuration),
+  );
 
   toastHideTimer = setTimeout(() => {
     toast.classList.remove("show");
@@ -765,8 +798,8 @@ saveBtn.addEventListener("click", async () => {
 
   if (idx === -1) {
     // Double-check project limit before saving (in case state changed)
-    const tier = currentTierInfo ? currentTierInfo.tier : TIERS.free;
-    const maxProjects = tier?.maxProjects ?? TIERS.free.maxProjects;
+    const tier = currentTierInfo?.pro ? TIERS.pro : TIERS.free;
+    const maxProjects = tier.maxProjects;
     if (maxProjects !== Infinity && projects.length >= maxProjects) {
       showUpgradePrompt(
         `You've reached the free project limit (${maxProjects}). Upgrade to Pro for unlimited projects.`,
@@ -785,8 +818,8 @@ saveBtn.addEventListener("click", async () => {
 
 addBtn.addEventListener("click", () => {
   // Tier enforcement: project limit
-  const tier = currentTierInfo ? currentTierInfo.tier : TIERS.free;
-  const maxProjects = tier?.maxProjects ?? TIERS.free.maxProjects;
+  const tier = currentTierInfo?.pro ? TIERS.pro : TIERS.free;
+  const maxProjects = tier.maxProjects;
   if (maxProjects !== Infinity && projects.length >= maxProjects) {
     showUpgradePrompt(
       `You've reached the free project limit (${maxProjects}). Upgrade to Pro for unlimited projects.`,
